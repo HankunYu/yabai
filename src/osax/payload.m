@@ -256,9 +256,13 @@ static bool verify_os_version(NSOperatingSystemVersion os_version)
         NSLog(@"[yabai-sa] Detected Tahoe Preview... flagging 'macOSSequoia=true.'");
         macOSSequoia = true;
         return true; // Tahoe preview
+    } else if (os_version.majorVersion == 27) {
+        NSLog(@"[yabai-sa] Detected macOS 27 experimental support; enabling verified scripting-addition capabilities only.");
+        macOSSequoia = true;
+        return true;
     }
 
-    NSLog(@"[yabai-sa] spaces functionality is only supported on macOS Monterey 12.0.0+, and Ventura 13.0.0+, Sonoma 14.0.0+, and Sequoia 15.0");
+    NSLog(@"[yabai-sa] spaces functionality is not supported on this macOS version");
 #endif
 
     return false;
@@ -284,6 +288,19 @@ static void init_instances()
         uint64_t dock_spaces_offset = decode_adrp_add(dock_spaces_addr, dock_spaces_addr - baseaddr);
         NSLog(@"[yabai-sa] (0x%llx) dock.spaces found at address 0x%llX (0x%llx)", baseaddr, dock_spaces_offset, dock_spaces_offset - baseaddr);
         dock_spaces = [(*(id *)(baseaddr + dock_spaces_offset)) retain];
+        if (os_version.majorVersion == 27 && dock_spaces != nil) {
+            Class dock_spaces_class = object_getClass(dock_spaces);
+            bool has_required_api = [dock_spaces respondsToSelector:@selector(currentSpaceForDisplayUUID:)] &&
+                                    [dock_spaces respondsToSelector:@selector(spacesForDisplay:)] &&
+                                    class_getInstanceVariable(dock_spaces_class, "_displaySpaces") != NULL;
+            if (has_required_api) {
+                NSLog(@"[yabai-sa] macOS 27 dock.spaces API verified (class=%s)", class_getName(dock_spaces_class));
+            } else {
+                NSLog(@"[yabai-sa] macOS 27 dock.spaces API verification failed; disabling spaces functionality");
+                [dock_spaces release];
+                dock_spaces = nil;
+            }
+        }
 #endif
     }
 

@@ -5,6 +5,11 @@ bool workspace_event_handler_begin(void **context)
     SUPPORTED_MACOS_VERSION_LIST
 #undef SUPPORT_MACOS_VERSION
 
+    // Use the most recent compatibility path as a safe default for newer
+    // macOS releases. Version-specific handling can override this once a
+    // behavioural difference has been identified.
+    _workspace_is_macos_version_tahoe = version.majorVersion >= 26;
+
     workspace_context *ws_context = [workspace_context alloc];
     if (!ws_context) return false;
 

@@ -5,7 +5,9 @@
     __asm__("mov x0, %0\n""mov x1, %1\n""mov x2, %2\n""mov x20, %3\n" : :"r"(v0), "r"(v1), "r"(v2), "r"(v3) :"x0", "x1", "x2", "x20"); ((void (*)())(func))();
 
 uint64_t get_dock_spaces_offset(NSOperatingSystemVersion os_version) {
-    if (os_version.majorVersion == 26) {
+    if (os_version.majorVersion == 27) {
+        return 0x30000;
+    } else if (os_version.majorVersion == 26) {
         return 0x30000;
     } else if (os_version.majorVersion == 15) {
         return os_version.minorVersion >= 4 ? 0x1f0000 : 0x200000;
@@ -117,7 +119,11 @@ uint64_t get_set_front_window_offset(NSOperatingSystemVersion os_version) {
 }
 
 const char *get_dock_spaces_pattern(NSOperatingSystemVersion os_version) {
-    if (os_version.majorVersion == 26) {
+    if (os_version.majorVersion == 27) {
+        // Dock 26A5378n, pulled from doBindingCommand:display:. The longer
+        // second global load distinguishes dock.spaces from a similar sequence.
+        return "88 ?? ?? ?? 08 01 19 91 00 01 40 F9 E2 03 13 AA ?? ?? ?? 94 88 ?? ?? ?? 08 E1 1A 91 00 01 40 F9";
+    } else if (os_version.majorVersion == 26) {
         // Pulling out of doBindingCommand:display (search decompiled text in ghidra) function.
         return "?8 ?? ?? ?? 08 ?? ?? 91 00 01 40 F9 E2 03 13 AA ?? ?? ?? 94 ?? ?? ?? ?? 08";
     } else if (os_version.majorVersion == 15) {
