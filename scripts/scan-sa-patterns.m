@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <mach-o/loader.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -27,8 +28,77 @@ struct byte_pattern {
 
 struct selector_spec {
     const char *name;
-    uint32_t string_offset;
 };
+
+static bool find_section(const uint8_t *data, size_t size, const char *section_name, uint64_t *offset, uint64_t *section_size)
+{
+    if (size < sizeof(struct mach_header_64)) return false;
+
+    const struct mach_header_64 *header = (const struct mach_header_64 *) data;
+    const uint8_t *cursor = data + sizeof(*header);
+    const uint8_t *end = cursor + header->sizeofcmds;
+    if (end > data + size) return false;
+
+    for (uint32_t i = 0; i < header->ncmds; ++i) {
+        const struct load_command *command = (const struct load_command *) cursor;
+        if (cursor + sizeof(*command) > end || command->cmdsize < sizeof(*command) || cursor + command->cmdsize > end) return false;
+
+        if (command->cmd == LC_SEGMENT_64) {
+            const struct segment_command_64 *segment = (const struct segment_command_64 *) command;
+            const struct section_64 *sections = (const struct section_64 *) (segment + 1);
+            for (uint32_t section_index = 0; section_index < segment->nsects; ++section_index) {
+                if (strcmp(sections[section_index].sectname, section_name) == 0) {
+                    *offset = sections[section_index].offset;
+                    *section_size = sections[section_index].size;
+                    return *offset <= size && *section_size <= size - *offset;
+                }
+            }
+        }
+
+        cursor += command->cmdsize;
+    }
+
+    return false;
+}
+
+static bool file_offset_to_vm_address(const uint8_t *data, size_t size, uint64_t file_offset, uint64_t *vm_address)
+{
+    if (size < sizeof(struct mach_header_64)) return false;
+
+    const struct mach_header_64 *header = (const struct mach_header_64 *) data;
+    const uint8_t *cursor = data + sizeof(*header);
+    const uint8_t *end = cursor + header->sizeofcmds;
+    if (end > data + size) return false;
+
+    for (uint32_t i = 0; i < header->ncmds; ++i) {
+        const struct load_command *command = (const struct load_command *) cursor;
+        if (cursor + sizeof(*command) > end || command->cmdsize < sizeof(*command) || cursor + command->cmdsize > end) return false;
+
+        if (command->cmd == LC_SEGMENT_64) {
+            const struct segment_command_64 *segment = (const struct segment_command_64 *) command;
+            if (file_offset >= segment->fileoff && file_offset < segment->fileoff + segment->filesize) {
+                *vm_address = segment->vmaddr + file_offset - segment->fileoff;
+                return true;
+            }
+        }
+
+        cursor += command->cmdsize;
+    }
+
+    return false;
+}
+
+static bool find_c_string_vm_address(const uint8_t *data, size_t size, const char *text, uint64_t *vm_address)
+{
+    size_t length = strlen(text) + 1;
+    for (uint64_t cursor = 0; cursor + length <= size; ++cursor) {
+        if (memcmp(data + cursor, text, length) == 0) {
+            return file_offset_to_vm_address(data, size, cursor, vm_address);
+        }
+    }
+
+    return false;
+}
 
 static bool parse_pattern(const char *text, struct byte_pattern *result)
 {
@@ -139,7 +209,8 @@ int main(int argc, char **argv)
 
     NSOperatingSystemVersion target = { .majorVersion = 27, .minorVersion = 0, .patchVersion = 0 };
     const struct pattern_spec specs[] = {
-        { "dock_spaces", get_dock_spaces_offset, get_dock_spaces_pattern },
+        { "dock_spaces_5378n", get_dock_spaces_offset, get_dock_spaces_pattern },
+        { "dock_spaces_5388g", get_dock_spaces_offset, get_dock_spaces_fallback_pattern },
         { "dppm", get_dppm_offset, get_dppm_pattern },
         { "fix_animation", get_fix_animation_offset, get_fix_animation_pattern },
         { "add_space", get_add_space_offset, get_add_space_pattern },
@@ -155,23 +226,39 @@ int main(int argc, char **argv)
     }
 
     const struct selector_spec selectors[] = {
-        { "_handleEvent:", 0x35e108 },
-        { "addSpace:forDisplayUUID:", 0x3623a4 },
-        { "doBindingCommand:display:", 0x364c37 },
-        { "moveSpace:toDisplay:displayUUID:", 0x36a4b9 },
-        { "removeSpace:", 0x36bb98 },
+        { "_handleEvent:" },
+        { "addSpace:forDisplayUUID:" },
+        { "doBindingCommand:display:" },
+        { "moveSpace:toDisplay:displayUUID:" },
+        { "removeSpace:" },
     };
-    const uint64_t selector_refs_start = 0x3e3570;
-    const uint64_t selector_refs_end = 0x3e8df0;
+
+    uint64_t selector_refs_start = 0;
+    uint64_t selector_refs_size = 0;
+    if (!find_section(data, stat_buffer.st_size, "__objc_selrefs", &selector_refs_start, &selector_refs_size)) {
+        fprintf(stderr, "could not locate __objc_selrefs\n");
+        munmap(data, stat_buffer.st_size);
+        close(fd);
+        return EXIT_FAILURE;
+    }
+    uint64_t selector_refs_end = selector_refs_start + selector_refs_size;
 
     printf("Objective-C selector references\n");
     for (size_t i = 0; i < sizeof(selectors) / sizeof(selectors[0]); ++i) {
+        uint64_t string_address = 0;
+        if (!find_c_string_vm_address(data, stat_buffer.st_size, selectors[i].name, &string_address)) {
+            printf("%-32s string=MISSING\n", selectors[i].name);
+            continue;
+        }
+
         bool found = false;
         for (uint64_t cursor = selector_refs_start; cursor + sizeof(uint64_t) <= selector_refs_end; cursor += sizeof(uint64_t)) {
             uint64_t pointer = 0;
             memcpy(&pointer, data + cursor, sizeof(pointer));
-            if ((uint32_t) pointer == selectors[i].string_offset) {
-                printf("%-32s selref=0x%llx\n", selectors[i].name, 0x100000000ULL + cursor);
+            if ((uint32_t) pointer == (uint32_t) string_address) {
+                uint64_t selector_ref_address = 0;
+                file_offset_to_vm_address(data, stat_buffer.st_size, cursor, &selector_ref_address);
+                printf("%-32s selref=0x%llx\n", selectors[i].name, selector_ref_address);
                 found = true;
             }
         }

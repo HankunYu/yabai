@@ -6,6 +6,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 ### Changed
+- Resolve the macOS 27 Dock Spaces singleton through Objective-C runtime
+  metadata before falling back to build-specific byte patterns.
+- Return scripting-addition operation status to the client so unsupported
+  Space operations can use their existing fallback paths.
 - Add experimental macOS 27 scripting-addition support for focusing Spaces and
   moving windows between Spaces on Apple Silicon.
 - Apply the Tahoe compatibility path to newer macOS versions by default.

@@ -142,6 +142,16 @@ const char *get_dock_spaces_pattern(NSOperatingSystemVersion os_version) {
     return NULL;
 }
 
+const char *get_dock_spaces_fallback_pattern(NSOperatingSystemVersion os_version) {
+    if (os_version.majorVersion == 27) {
+        // Dock 26A5388g. Kept as a fallback for cases where Objective-C
+        // runtime metadata is unavailable or the semantic resolver fails.
+        return "88 ?? ?? ?? 08 41 19 91 00 01 40 F9 E2 03 13 AA ?? ?? ?? 94 88 ?? ?? ?? 08 21 1B 91 00 01 40 F9";
+    }
+
+    return NULL;
+}
+
 const char *get_dppm_pattern(NSOperatingSystemVersion os_version) {
     if (os_version.majorVersion == 26) {
         //Pulling from function 'DPRemoteConnection::_handleEvent:'

@@ -154,6 +154,115 @@ static uint64_t image_slide(void)
     return 0;
 }
 
+#if __arm64__
+static bool address_in_main_segment(uint64_t address, const char *segment_name)
+{
+    const struct segment_command_64 *segment = getsegbyname(segment_name);
+    if (!segment) return false;
+
+    uint64_t start = segment->vmaddr + image_slide();
+    return address >= start && address < start + segment->vmsize;
+}
+
+static bool address_is_readable(uint64_t address)
+{
+    mach_vm_address_t region_address = address;
+    mach_vm_size_t region_size = 0;
+    vm_region_basic_info_data_64_t region_info = {};
+    mach_msg_type_number_t region_info_count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object_name = MACH_PORT_NULL;
+
+    kern_return_t result = mach_vm_region(mach_task_self(),
+                                          &region_address,
+                                          &region_size,
+                                          VM_REGION_BASIC_INFO_64,
+                                          (vm_region_info_t) &region_info,
+                                          &region_info_count,
+                                          &object_name);
+    if (object_name != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object_name);
+
+    return result == KERN_SUCCESS &&
+           address >= region_address &&
+           address < region_address + region_size &&
+           (region_info.protection & VM_PROT_READ) != 0;
+}
+
+static bool dock_spaces_candidate_is_valid(id candidate)
+{
+    if (candidate == nil || !address_is_readable((uint64_t) candidate)) return false;
+
+    Class candidate_class = object_getClass(candidate);
+    if (candidate_class == Nil) return false;
+
+    return class_getInstanceMethod(candidate_class, @selector(currentSpaceForDisplayUUID:)) != NULL &&
+           class_getInstanceMethod(candidate_class, @selector(spacesForDisplay:)) != NULL &&
+           class_getInstanceVariable(candidate_class, "_displaySpaces") != NULL;
+}
+
+static int64_t sign_extend_21(uint64_t value)
+{
+    return (int64_t) (value << 43) >> 43;
+}
+
+static uint64_t decode_adrp_add_address(uint64_t instruction_address, uint32_t adrp, uint32_t add)
+{
+    uint64_t immlo = (adrp >> 29) & 0x3;
+    uint64_t immhi = (adrp >> 5) & 0x7ffff;
+    int64_t page_delta = sign_extend_21((immhi << 2) | immlo) << 12;
+    uint64_t immediate = (add >> 10) & 0xfff;
+    if ((add >> 22) & 0x1) immediate <<= 12;
+
+    return (instruction_address & ~0xfffULL) + page_delta + immediate;
+}
+
+static id resolve_dock_spaces_from_runtime(void)
+{
+    Class tile_class = objc_getClass("Tile");
+    Method method = class_getInstanceMethod(tile_class, @selector(doBindingCommand:display:));
+    if (!method) {
+        NSLog(@"[yabai-sa] runtime resolver could not locate -[Tile doBindingCommand:display:]");
+        return nil;
+    }
+
+    uint64_t method_address = (uint64_t) ptrauth_strip(method_getImplementation(method), ptrauth_key_function_pointer);
+    if (!address_in_main_segment(method_address, "__TEXT")) {
+        NSLog(@"[yabai-sa] runtime resolver rejected method IMP outside Dock.__TEXT");
+        return nil;
+    }
+
+    // The method accesses the live Spaces singleton through an ADRP + ADD +
+    // LDR sequence. Decode candidate globals from this small, semantically
+    // anchored method body and validate their Objective-C API before use.
+    const uint64_t scan_length = 0x200;
+    for (uint64_t cursor = method_address; cursor + 12 <= method_address + scan_length; cursor += 4) {
+        uint32_t adrp = *(uint32_t *) cursor;
+        uint32_t add  = *(uint32_t *) (cursor + 4);
+        uint32_t ldr  = *(uint32_t *) (cursor + 8);
+
+        if ((adrp & 0x9f000000) != 0x90000000) continue;
+        if ((add  & 0xff000000) != 0x91000000) continue;
+        if ((ldr  & 0xffc00000) != 0xf9400000) continue;
+
+        uint32_t reg = adrp & 0x1f;
+        if ((add & 0x1f) != reg || ((add >> 5) & 0x1f) != reg) continue;
+        if (((ldr >> 5) & 0x1f) != reg || (ldr & 0x1f) != 0) continue;
+
+        uint64_t global_address = decode_adrp_add_address(cursor, adrp, add);
+        if (!address_in_main_segment(global_address, "__DATA") &&
+            !address_in_main_segment(global_address, "__DATA_CONST")) continue;
+
+        id candidate = *(id *) global_address;
+        if (dock_spaces_candidate_is_valid(candidate)) {
+            NSLog(@"[yabai-sa] runtime resolver found dock.spaces via -[Tile doBindingCommand:display:] at 0x%llx", global_address);
+            return candidate;
+        }
+    }
+
+    NSLog(@"[yabai-sa] runtime resolver could not locate a valid dock.spaces candidate");
+    return nil;
+}
+#endif
+
 static uint64_t hex_find_seq(uint64_t baddr, const char *c_pattern)
 {
     if (!baddr || !c_pattern) return 0;
@@ -275,10 +384,26 @@ static void init_instances()
 
     uint64_t baseaddr = static_base_address() + image_slide();
 
-    uint64_t dock_spaces_addr = hex_find_seq(baseaddr + get_dock_spaces_offset(os_version), get_dock_spaces_pattern(os_version));
+    uint64_t dock_spaces_addr = 0;
+#if __arm64__
+    if (os_version.majorVersion == 27) {
+        dock_spaces = [resolve_dock_spaces_from_runtime() retain];
+    }
+#endif
+
+    if (dock_spaces == nil) {
+        dock_spaces_addr = hex_find_seq(baseaddr + get_dock_spaces_offset(os_version), get_dock_spaces_pattern(os_version));
+#if __arm64__
+        if (dock_spaces_addr == 0 && os_version.majorVersion == 27) {
+            dock_spaces_addr = hex_find_seq(baseaddr + get_dock_spaces_offset(os_version), get_dock_spaces_fallback_pattern(os_version));
+        }
+#endif
+    }
+
     if (dock_spaces_addr == 0) {
-        dock_spaces = nil;
-        NSLog(@"[yabai-sa] could not locate pointer to dock.spaces! spaces functionality will not work!");
+        if (dock_spaces == nil) {
+            NSLog(@"[yabai-sa] could not locate pointer to dock.spaces! spaces functionality will not work!");
+        }
     } else {
 #ifdef __x86_64__
         uint32_t dock_spaces_offset = *(int32_t *)dock_spaces_addr;
@@ -290,10 +415,7 @@ static void init_instances()
         dock_spaces = [(*(id *)(baseaddr + dock_spaces_offset)) retain];
         if (os_version.majorVersion == 27 && dock_spaces != nil) {
             Class dock_spaces_class = object_getClass(dock_spaces);
-            bool has_required_api = [dock_spaces respondsToSelector:@selector(currentSpaceForDisplayUUID:)] &&
-                                    [dock_spaces respondsToSelector:@selector(spacesForDisplay:)] &&
-                                    class_getInstanceVariable(dock_spaces_class, "_displaySpaces") != NULL;
-            if (has_required_api) {
+            if (dock_spaces_candidate_is_valid(dock_spaces)) {
                 NSLog(@"[yabai-sa] macOS 27 dock.spaces API verified (class=%s)", class_getName(dock_spaces_class));
             } else {
                 NSLog(@"[yabai-sa] macOS 27 dock.spaces API verification failed; disabling spaces functionality");
@@ -971,13 +1093,39 @@ static void do_handshake(int sockfd)
     send(sockfd, bytes, bytes_length+1, 0);
 }
 
+static bool operation_is_supported(enum sa_opcode op)
+{
+    switch (op) {
+    case SA_OPCODE_SPACE_FOCUS:
+        return dock_spaces != nil;
+    case SA_OPCODE_SPACE_CREATE:
+        return dock_spaces != nil && add_space_fp != 0;
+    case SA_OPCODE_SPACE_DESTROY:
+        return dock_spaces != nil && remove_space_fp != 0;
+    case SA_OPCODE_SPACE_MOVE:
+        return dock_spaces != nil && dp_desktop_picture_manager != nil && move_space_fp != 0;
+    case SA_OPCODE_WINDOW_FOCUS:
+        return set_front_window_fp != 0;
+    default:
+        return true;
+    }
+}
+
 static void handle_message(int sockfd, char *message)
 {
     enum sa_opcode op = *message++;
-    switch (op) {
-    case SA_OPCODE_HANDSHAKE: {
+    if (op == SA_OPCODE_HANDSHAKE) {
         do_handshake(sockfd);
-    } break;
+        return;
+    }
+
+    uint8_t status = operation_is_supported(op);
+    if (!status) {
+        send(sockfd, &status, sizeof(status), 0);
+        return;
+    }
+
+    switch (op) {
     case SA_OPCODE_SPACE_FOCUS: {
         do_space_focus(message);
     } break;
@@ -1032,7 +1180,12 @@ static void handle_message(int sockfd, char *message)
     case SA_OPCODE_WINDOW_TO_SPACE: {
         do_window_move_to_space(message);
     } break;
+    default: {
+        status = 0;
+    } break;
     }
+
+    send(sockfd, &status, sizeof(status), 0);
 }
 
 static inline bool read_message(int sockfd, char *message)

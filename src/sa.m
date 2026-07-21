@@ -427,14 +427,13 @@ out:
 static bool scripting_addition_send_bytes(char *bytes, int length)
 {
     int sockfd;
-    char dummy;
+    uint8_t status = 0;
     bool result = false;
 
     if (socket_open(&sockfd)) {
         if (socket_connect(sockfd, g_sa_socket_file)) {
             if (send(sockfd, bytes, length, 0) != -1) {
-                recv(sockfd, &dummy, 1, 0);
-                result = true;
+                result = recv(sockfd, &status, sizeof(status), 0) == sizeof(status) && status != 0;
             }
         }
 
