@@ -41,6 +41,7 @@
 #define unpack(v) memcpy(&v, message, sizeof(v)); message += sizeof(v)
 #define lerp(a, t, b) (((1.0-t)*a) + (t*b))
 
+extern CGDirectDisplayID CGDisplayGetDisplayIDFromUUID(CFUUIDRef uuid);
 extern int SLSMainConnectionID(void);
 extern CGError SLSGetConnectionPSN(int cid, ProcessSerialNumber *psn);
 extern CGError SLSGetWindowAlpha(int cid, uint32_t wid, float *alpha);
@@ -194,7 +195,12 @@ static bool dock_spaces_candidate_is_valid(id candidate)
     Class candidate_class = object_getClass(candidate);
     if (candidate_class == Nil) return false;
 
-    return class_getInstanceMethod(candidate_class, @selector(currentSpaceForDisplayUUID:)) != NULL &&
+    // Dock 2571.x (macOS 27.2) renamed -currentSpaceForDisplayUUID: to
+    // -currentSpaceForDisplay: and changed the argument to a CGDirectDisplayID.
+    bool has_current_space = class_getInstanceMethod(candidate_class, @selector(currentSpaceForDisplayUUID:)) != NULL ||
+                             class_getInstanceMethod(candidate_class, @selector(currentSpaceForDisplay:)) != NULL;
+
+    return has_current_space &&
            class_getInstanceMethod(candidate_class, @selector(spacesForDisplay:)) != NULL &&
            class_getInstanceVariable(candidate_class, "_displaySpaces") != NULL;
 }
@@ -696,6 +702,33 @@ static void do_space_create(char *message)
     });
 }
 
+
+// Resolve the current space for a display UUID across Dock API generations:
+//   - pre-Sequoia:        -[Spaces currentSpaceforDisplayUUID:(NSString *)]
+//   - Sequoia .. 27.1:    -[Spaces currentSpaceForDisplayUUID:(NSString *)]
+//   - 27.2 (Dock 2571.x): -[Spaces currentSpaceForDisplay:(CGDirectDisplayID)]
+static id current_space_for_display_uuid(CFStringRef display_uuid)
+{
+    if (dock_spaces == nil) return nil;
+
+    if ([dock_spaces respondsToSelector:@selector(currentSpaceForDisplayUUID:)]) {
+        return ((id (*)(id, SEL, CFStringRef)) objc_msgSend)(dock_spaces, @selector(currentSpaceForDisplayUUID:), display_uuid);
+    }
+
+    if ([dock_spaces respondsToSelector:@selector(currentSpaceForDisplay:)]) {
+        CGDirectDisplayID display_id = 0;
+        CFUUIDRef uuid = CFUUIDCreateFromString(NULL, display_uuid);
+        if (uuid) {
+            display_id = CGDisplayGetDisplayIDFromUUID(uuid);
+            CFRelease(uuid);
+        }
+        if (!display_id) return nil;
+        return ((id (*)(id, SEL, CGDirectDisplayID)) objc_msgSend)(dock_spaces, @selector(currentSpaceForDisplay:), display_id);
+    }
+
+    return ((id (*)(id, SEL, CFStringRef)) objc_msgSend)(dock_spaces, @selector(currentSpaceforDisplayUUID:), display_uuid);
+}
+
 static void do_space_focus(char *message)
 {
     if (dock_spaces == nil) return;
@@ -705,9 +738,7 @@ static void do_space_focus(char *message)
 
     if (dest_space_id) {
         CFStringRef dest_display = SLSCopyManagedDisplayForSpace(SLSMainConnectionID(), dest_space_id);
-        id source_space = macOSSequoia
-                        ? ((id (*)(id, SEL, CFStringRef)) objc_msgSend)(dock_spaces, @selector(currentSpaceForDisplayUUID:), dest_display)
-                        : ((id (*)(id, SEL, CFStringRef)) objc_msgSend)(dock_spaces, @selector(currentSpaceforDisplayUUID:), dest_display);
+        id source_space = current_space_for_display_uuid(dest_display);
         uint64_t source_space_id = get_space_id(source_space);
 
         if (source_space_id != dest_space_id) {

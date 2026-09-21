@@ -66,3 +66,11 @@ clean: clean-build
 $(BUILD_PATH)/yabai: $(YABAI_SRC)
 	mkdir -p $(BUILD_PATH)
 	xcrun clang $^ $(BUILD_FLAGS) $(CLI_FLAGS) $(FRAMEWORK_PATH) $(FRAMEWORK) -o $@
+
+# Build an optimized, yabai-cert signed binary and install it to the
+# root-owned /usr/local/bin so the sudoers rule can stay digest-free.
+deploy: install sign
+	sudo cp $(BUILD_PATH)/yabai /usr/local/bin/yabai
+	sudo /usr/local/bin/yabai --uninstall-sa
+	sudo /usr/local/bin/yabai --load-sa
+	/usr/local/bin/yabai --restart-service
