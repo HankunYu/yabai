@@ -1645,6 +1645,10 @@ bool window_manager_add_existing_application_windows(struct space_manager *sm, s
             bool missing_window = false;
             uint32_t *app_window_list = NULL;
 
+            int probe_role_count = 0;
+            int probe_window_count = 0;
+            uint64_t probe_last_window_element_id = 0;
+
             for (int i = 0; i < global_window_count; ++i) {
                 struct window *window = window_manager_find_window(wm, global_window_list[i]);
                 if (!window) {
@@ -1683,9 +1687,14 @@ bool window_manager_add_existing_application_windows(struct space_manager *sm, s
                     AXUIElementCopyAttributeValue(element_ref, kAXRoleAttribute, &role);
 
                     if (role) {
+                        ++probe_role_count;
                         if (CFEqual(role, kAXWindowRole)) {
                             uint32_t element_wid = ax_window_id(element_ref);
                             bool matched = false;
+
+                            ++probe_window_count;
+                            probe_last_window_element_id = element_id;
+                            debug("%s: probe %s element_id=%llu wid=%d\n", __FUNCTION__, application->name, element_id, element_wid);
 
                             if (element_wid != 0) {
                                 for (int i = 0; i < app_window_list_len; ++i) {
@@ -1712,7 +1721,11 @@ bool window_manager_add_existing_application_windows(struct space_manager *sm, s
             }
 
             if (ts_buf_len(app_window_list) > 0) {
-                debug("%s: workaround failed to resolve all windows for %s\n", __FUNCTION__, application->name);
+                debug("%s: workaround failed to resolve all windows for %s (probed roles=%d windows=%d last_window_element_id=%llu unresolved=%d)\n",
+                      __FUNCTION__, application->name, probe_role_count, probe_window_count, probe_last_window_element_id, ts_buf_len(app_window_list));
+                for (int i = 0; i < ts_buf_len(app_window_list); ++i) {
+                    debug("%s:   unresolved wid=%d for %s\n", __FUNCTION__, app_window_list[i], application->name);
+                }
                 buf_push(wm->applications_to_refresh, application);
             } else {
                 debug("%s: workaround resolved all windows for %s\n", __FUNCTION__, application->name);
@@ -2745,8 +2758,27 @@ void window_manager_begin(struct space_manager *sm, struct window_manager *wm)
                 window_manager_add_application(wm, application);
                 window_manager_add_existing_application_windows(sm, wm, application, -1);
             } else {
+                bool ax_retry = application->ax_retry;
+
                 application_unobserve(application);
                 application_destroy(application);
+                debug("%s: could not observe notifications for %s (%d) (%d)\n", __FUNCTION__, process->name, process->pid, ax_retry);
+
+                //
+                // NOTE(hankun): The accessibility API reports kAXErrorCannotComplete for applications that
+                // are busy or have not settled yet. This is common when yabai is (re)started right after the
+                // system wakes from sleep, and previously caused such applications to be dropped permanently.
+                // Retry through the regular application-launched path instead, matching the behaviour of
+                // EVENT_HANDLER(APPLICATION_LAUNCHED).
+                //
+
+                if (ax_retry) {
+                    __block ProcessSerialNumber psn = process->psn;
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 0.1f * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                        struct process *_process = process_manager_find_process(&g_process_manager, &psn);
+                        if (_process) event_loop_post(&g_event_loop, APPLICATION_LAUNCHED, _process, 0);
+                    });
+                }
             }
         } else {
             debug("%s: %s (%d) is not observable, subscribing to activationPolicy changes\n", __FUNCTION__, process->name, process->pid);
