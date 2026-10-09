@@ -1008,6 +1008,36 @@ enum space_op_error space_manager_focus_space(uint64_t sid)
     return SPACE_OP_ERROR_SUCCESS;
 }
 
+enum space_op_error space_manager_focus_space_animated(uint64_t sid)
+{
+    bool is_in_mc = mission_control_is_active();
+    if (is_in_mc) return SPACE_OP_ERROR_IN_MISSION_CONTROL;
+
+    uint64_t cur_sid = space_manager_active_space();
+    if (cur_sid == sid) return SPACE_OP_ERROR_SAME_SPACE;
+
+    if (space_animation_is_in_progress()) return SPACE_OP_ERROR_DISPLAY_IS_ANIMATING;
+
+    uint32_t did = space_display_id(sid);
+    if (space_display_id(cur_sid) != did) return space_manager_focus_space(sid);
+
+    int cur_index = space_manager_mission_control_index(cur_sid);
+    int new_index = space_manager_mission_control_index(sid);
+    float direction = new_index > cur_index ? 1.0f : -1.0f;
+
+    struct space_animation *animation = space_animation_create(did, cur_sid, sid, direction, g_space_manager.space_animation_duration, g_space_manager.space_animation_easing);
+    if (!animation) return space_manager_focus_space(sid);
+
+    enum space_op_error result = space_manager_focus_space(sid);
+    if (result == SPACE_OP_ERROR_SUCCESS) {
+        space_animation_run(animation);
+    } else {
+        space_animation_destroy(animation);
+    }
+
+    return result;
+}
+
 enum space_op_error space_manager_switch_space(uint64_t sid)
 {
     bool is_in_mc = mission_control_is_active();
@@ -1210,6 +1240,8 @@ void space_manager_begin(struct space_manager *sm)
     sm->window_zoom_persist = true;
     sm->labels = NULL;
     sm->skip_window_focus_animation = false;
+    sm->space_animation_duration = 0.0f;
+    sm->space_animation_easing = ease_out_cubic_type;
     table_init(&sm->view, 23, hash_view, compare_view);
 
     int display_count;

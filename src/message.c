@@ -52,6 +52,9 @@ extern bool g_verbose;
 #define COMMAND_CONFIG_MOUSE_DROP_ACTION     "mouse_drop_action"
 #define COMMAND_CONFIG_EXTERNAL_BAR          "external_bar"
 #define COMMAND_CONFIG_SKIP_SPACE_ANIMATION  "skip_window_focus_animation"
+#define COMMAND_CONFIG_SPACE_ANIM_DURATION   "space_animation_duration"
+#define COMMAND_CONFIG_SPACE_ANIM_EASING     "space_animation_easing"
+#define COMMAND_CONFIG_SPACE_BACK_AND_FORTH  "space_focus_back_and_forth"
 
 #define SELECTOR_CONFIG_SPACE                "--space"
 
@@ -1263,6 +1266,48 @@ static void handle_domain_config(FILE *rsp, struct token domain, char *message)
             } else {
                 daemon_fail(rsp, "unknown value '%.*s' given to command '%.*s' for domain '%.*s'\n", value.length, value.text, command.length, command.text, domain.length, domain.text);
             }
+        } else if (token_equals(command, COMMAND_CONFIG_SPACE_ANIM_DURATION)) {
+            struct token_value value = token_to_value(get_token(&message));
+            if (value.type == TOKEN_TYPE_INVALID) {
+                fprintf(rsp, "%f\n", g_space_manager.space_animation_duration);
+            } else if (value.type == TOKEN_TYPE_FLOAT) {
+                if (value.float_value == 0.0f) {
+                    g_space_manager.space_animation_duration = value.float_value;
+                } else if (CGPreflightScreenCaptureAccess()) {
+                    g_space_manager.space_animation_duration = value.float_value;
+                } else {
+                    daemon_fail(rsp, "command '%.*s' for domain '%.*s' requires Screen Recording permissions! ignoring request..\n", command.length, command.text, domain.length, domain.text);
+                    CGRequestScreenCaptureAccess();
+                }
+            } else {
+                daemon_fail(rsp, "unknown value '%.*s' given to command '%.*s' for domain '%.*s'\n", value.token.length, value.token.text, command.length, command.text, domain.length, domain.text);
+            }
+        } else if (token_equals(command, COMMAND_CONFIG_SPACE_ANIM_EASING)) {
+            struct token value = get_token(&message);
+            if (!token_is_valid(value)) {
+                fprintf(rsp, "%s\n", animation_easing_type_str[g_space_manager.space_animation_easing]);
+            } else {
+                bool match = false;
+                for (int i = 0; i < EASING_TYPE_COUNT; ++i) {
+                    if (token_equals(value, animation_easing_type_str[i])) {
+                        g_space_manager.space_animation_easing = i;
+                        match = true;
+                        break;
+                    }
+                }
+                if (!match) daemon_fail(rsp, "unknown value '%.*s' given to command '%.*s' for domain '%.*s'\n", value.length, value.text, command.length, command.text, domain.length, domain.text);
+            }
+        } else if (token_equals(command, COMMAND_CONFIG_SPACE_BACK_AND_FORTH)) {
+            struct token value = get_token(&message);
+            if (!token_is_valid(value)) {
+                fprintf(rsp, "%s\n", bool_str[g_space_manager.space_focus_back_and_forth]);
+            } else if (token_equals(value, ARGUMENT_COMMON_VAL_OFF)) {
+                g_space_manager.space_focus_back_and_forth = false;
+            } else if (token_equals(value, ARGUMENT_COMMON_VAL_ON)) {
+                g_space_manager.space_focus_back_and_forth = true;
+            } else {
+                daemon_fail(rsp, "unknown value '%.*s' given to command '%.*s' for domain '%.*s'\n", value.length, value.text, command.length, command.text, domain.length, domain.text);
+            }
         } else if (token_equals(command, COMMAND_CONFIG_SKIP_SPACE_ANIMATION)) {
             struct token value = get_token(&message);
             if (!token_is_valid(value)) {
@@ -1780,7 +1825,18 @@ static void handle_domain_space(FILE *rsp, struct token domain, char *message)
         if (token_equals(command, COMMAND_SPACE_FOCUS)) {
             struct selector selector = parse_space_selector(rsp, &message, acting_sid, false);
             if (selector.did_parse && selector.sid) {
-                enum space_op_error result = space_manager_focus_space(selector.sid);
+                uint64_t sid = selector.sid;
+                uint64_t last_sid = g_space_manager.last_space_id;
+
+                //
+                // NOTE: Focusing the already focused space goes back to the
+                // previously focused space instead (i3 style back_and_forth).
+                //
+                if (g_space_manager.space_focus_back_and_forth && sid == space_manager_active_space() && last_sid && last_sid != sid && table_find(&g_space_manager.view, &last_sid)) {
+                    sid = last_sid;
+                }
+
+                enum space_op_error result = g_space_manager.space_animation_duration > 0.0f ? space_manager_focus_space_animated(sid) : space_manager_focus_space(sid);
                 if (result == SPACE_OP_ERROR_SAME_SPACE) {
                     daemon_fail(rsp, "cannot focus an already focused space.\n");
                 } else if (result == SPACE_OP_ERROR_DISPLAY_IS_ANIMATING) {

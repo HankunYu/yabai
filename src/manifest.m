@@ -1,6 +1,7 @@
 #include <objc/objc-runtime.h>
 #include <Carbon/Carbon.h>
 #include <Cocoa/Cocoa.h>
+#include <QuartzCore/QuartzCore.h>
 #include <CoreVideo/CoreVideo.h>
 #include <mach/mach_time.h>
 #include <mach-o/dyld.h>
@@ -74,6 +75,7 @@
 #include "application.h"
 #include "display_manager.h"
 #include "space_manager.h"
+#include "space_animation.h"
 #include "window_manager.h"
 #include "mouse_handler.h"
 
@@ -92,6 +94,7 @@
 #include "application.c"
 #include "display_manager.c"
 #include "space_manager.c"
+#include "space_animation.m"
 #include "window_manager.c"
 #include "mouse_handler.c"
 #include "yabai.c"

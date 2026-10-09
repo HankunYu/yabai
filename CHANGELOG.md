@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+- New configs *space_animation_duration* and *space_animation_easing*: focus
+  spaces with a single slide animation (Hyprland style), even across several
+  spaces. Requires Screen Recording permissions.
+- New config *space_focus_back_and_forth*: focusing the already focused space
+  goes back to the previously focused space.
+
 ### Changed
 - Resolve the macOS 27 Dock Spaces singleton through Objective-C runtime
   metadata before falling back to build-specific byte patterns.

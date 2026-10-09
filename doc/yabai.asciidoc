@@ -175,6 +175,20 @@ Global Settings
 *window_zoom_persist* ['<BOOL_SEL>']::
     Windows will keep their zoom-state through layout changes.
 
+*space_animation_duration* ['<floating point number>']::
+    Duration (s) of the slide animation played when a space is focused through *space --focus*. +
+    The current and the target space slide across in a single motion, regardless of how many spaces lie between them. +
+    Only applies when the focused space and the target space are on the same display. +
+    Screen Recording permissions are required. +
+    Set to 0.0 to disable (default).
+
+*space_animation_easing* ['<EASING>']::
+    Easing function of the space slide animation (default: ease_out_cubic). +
+    Accepts the same values as *window_animation_easing*.
+
+*space_focus_back_and_forth* ['<BOOL_SEL>']::
+    Focusing the already focused space through *space --focus* focuses the previously focused space instead.
+
 *skip_window_focus_animation* ['<BOOL_SEL>']::
     Bypass macOS space animation when an application or window on an inactive space is focused. +
     You should only enable this if you do NOT use the scripting addition. +
@@ -294,7 +308,8 @@ COMMAND
 ^^^^^^^
 
 *--focus* '<SPACE_SEL>'::
-    Focus the given space.
+    Focus the given space. +
+    See *space_animation_duration* and *space_focus_back_and_forth* in the config section.
 
 *--switch* '<SPACE_SEL>'::
     The selected space will always be the currently focused space. +
