@@ -414,6 +414,21 @@ static EVENT_HANDLER(APPLICATION_FRONT_SWITCHED)
         }
 
         window_manager_add_lost_focused_event(&g_window_manager, application_focused_window_id);
+
+        //
+        // NOTE(hankun): The focused window of an application we observe is not tracked. This happens when we miss its
+        // kAXCreatedNotification (seen with Electron apps such as Claude right after they relaunch), and nothing else
+        // would ever pick the window up again. Re-run window creation for it; the lost focus event recorded above is
+        // consumed by window_manager_create_and_add_window once the window has been added.
+        //
+
+        CFTypeRef window_ref = NULL;
+        AXUIElementCopyAttributeValue(application->ref, kAXFocusedWindowAttribute, &window_ref);
+        if (window_ref) {
+            debug("%s: focused window %d of %s is not tracked, attempting to add it\n", __FUNCTION__, application_focused_window_id, application->name);
+            event_loop_post(&g_event_loop, WINDOW_CREATED, (void *) window_ref, 0);
+        }
+
         return;
     }
 
@@ -551,16 +566,28 @@ static EVENT_HANDLER(APPLICATION_HIDDEN)
 static EVENT_HANDLER(WINDOW_CREATED)
 {
     uint32_t window_id = ax_window_id(context);
-    if (!window_id) { CFRelease(context); return; }
+    if (!window_id) {
+        debug("%s: element has no window id yet (pid %d), ignoring..\n", __FUNCTION__, ax_window_pid(context));
+        CFRelease(context);
+        return;
+    }
 
     struct window *existing_window = window_manager_find_window(&g_window_manager, window_id);
     if (existing_window) { CFRelease(context); return; }
 
     pid_t window_pid = ax_window_pid(context);
-    if (!window_pid) { CFRelease(context); return; }
+    if (!window_pid) {
+        debug("%s: could not get pid of window %d, ignoring..\n", __FUNCTION__, window_id);
+        CFRelease(context);
+        return;
+    }
 
     struct application *application = window_manager_find_application(&g_window_manager, window_pid);
-    if (!application) { CFRelease(context); return; }
+    if (!application) {
+        debug("%s: application (%d) of window %d is not observed, ignoring..\n", __FUNCTION__, window_pid, window_id);
+        CFRelease(context);
+        return;
+    }
 
     struct window *window = window_manager_create_and_add_window(&g_space_manager, &g_window_manager, application, context, window_id, true);
     if (!window) return;
