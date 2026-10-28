@@ -749,13 +749,15 @@ void window_manager_set_window_frame(struct window *window, float x, float y, fl
         if (size_ref) AXUIElementSetAttributeValue(window->ref, kAXSizeAttribute, size_ref);
 
         if (position_ref) {
-            AXUIElementSetAttributeValue(window->ref, kAXPositionAttribute, position_ref);
+            AXError result = AXUIElementSetAttributeValue(window->ref, kAXPositionAttribute, position_ref);
+            if (result != kAXErrorSuccess) debug("%s: could not move %s %d (%d)\n", __FUNCTION__, window->application->name, window->id, result);
             CFRelease(position_ref);
         }
 
         // NOTE(asmvik): Due to macOS constraints (visible screen-area), we might need to resize the window *after* moving it.
         if (size_ref) {
-            AXUIElementSetAttributeValue(window->ref, kAXSizeAttribute, size_ref);
+            AXError result = AXUIElementSetAttributeValue(window->ref, kAXSizeAttribute, size_ref);
+            if (result != kAXErrorSuccess) debug("%s: could not resize %s %d (%d)\n", __FUNCTION__, window->application->name, window->id, result);
             CFRelease(size_ref);
         }
     });
@@ -2195,11 +2197,15 @@ void window_manager_make_window_floating(struct space_manager *sm, struct window
 {
     TIME_FUNCTION;
 
-    if (!window_manager_is_window_eligible(window)) return;
+    if (!window_manager_is_window_eligible(window)) {
+        debug("%s: %s %d is not eligible, ignoring..\n", __FUNCTION__, window->application->name, window->id);
+        return;
+    }
 
     if (!force) {
         if (!window_is_standard(window) || !window_level_is_standard(window) || !window_can_move(window)) {
             if (!window_check_rule_flag(window, WINDOW_RULE_MANAGED)) {
+                debug("%s: %s %d rejected (standard=%d level=%d can_move=%d), ignoring..\n", __FUNCTION__, window->application->name, window->id, window_is_standard(window), window_level_is_standard(window), window_can_move(window));
                 return;
             }
         }
